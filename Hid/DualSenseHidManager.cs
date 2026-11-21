@@ -186,6 +186,28 @@ public sealed class DualSenseHidManager : IDisposable
                     Buffer.BlockCopy(report, 0, writeBuffer, 0, report.Length);
                 }
 
+                // On Windows Bluetooth, HidD_SetOutputReport (control pipe) is much more reliable
+                // than WriteFile (interrupt pipe), because many BT adapters silently drop WriteFile.
+                if (NativeMethods.HidD_SetOutputReport(device.Handle, writeBuffer, writeBuffer.Length))
+                {
+                    anySucceeded = true;
+                    _lastWriteStatus = $"HidD_SetOutputReport({writeBuffer.Length} bytes): OK";
+                    continue;
+                }
+
+                int setOutPaddedErr = Marshal.GetLastWin32Error();
+
+                if (writeBuffer.Length != report.Length &&
+                    NativeMethods.HidD_SetOutputReport(device.Handle, report, report.Length))
+                {
+                    anySucceeded = true;
+                    _lastWriteStatus = $"HidD_SetOutputReport(78 bytes): OK (padded err={setOutPaddedErr})";
+                    continue;
+                }
+
+                int setOut78Err = Marshal.GetLastWin32Error();
+
+                // Fallback to WriteFile (interrupt pipe)
                 bool written = NativeMethods.WriteFile(
                     device.Handle,
                     writeBuffer,
@@ -196,42 +218,20 @@ public sealed class DualSenseHidManager : IDisposable
                 if (written && bytesWritten == writeBuffer.Length)
                 {
                     anySucceeded = true;
-                    _lastWriteStatus = $"WriteFile({writeBuffer.Length} bytes): OK (enviados={bytesWritten})";
+                    _lastWriteStatus = $"WriteFile({writeBuffer.Length} bytes): OK (SetOutputReport err={setOutPaddedErr}/{setOut78Err})";
                     continue;
                 }
 
                 int writeError = Marshal.GetLastWin32Error();
                 if (IsDisconnectError(writeError))
                 {
-                    _lastWriteStatus = $"WriteFile({writeBuffer.Length} bytes): Desconectado (err={writeError})";
+                    _lastWriteStatus = $"Desconectado durante WriteFile (err={writeError})";
                     disconnectedPaths ??= [];
                     disconnectedPaths.Add(device.DevicePath);
                     continue;
                 }
 
-                // Fallback 1: try WriteFile with exact 78-byte report length
-                if (writeBuffer.Length != report.Length &&
-                    NativeMethods.WriteFile(device.Handle, report, (uint)report.Length, out uint rawWritten, IntPtr.Zero) &&
-                    rawWritten == report.Length)
-                {
-                    anySucceeded = true;
-                    _lastWriteStatus = $"WriteFile({writeBuffer.Length}) err={writeError}; WriteFile(78): OK";
-                    continue;
-                }
-
-                int rawError = Marshal.GetLastWin32Error();
-
-                // Fallback 2: HidD_SetOutputReport with 78-byte report
-                if (NativeMethods.HidD_SetOutputReport(device.Handle, report, report.Length))
-                {
-                    anySucceeded = true;
-                    _lastWriteStatus = $"WriteFile({writeBuffer.Length}) err={writeError}; HidD_SetOutputReport(78): OK";
-                }
-                else
-                {
-                    int setOutError = Marshal.GetLastWin32Error();
-                    _lastWriteStatus = $"FALHA envio: WriteFile({writeBuffer.Length}) err={writeError}, WriteFile(78) err={rawError}, SetOutputReport err={setOutError}";
-                }
+                _lastWriteStatus = $"FALHA envio: SetOut({writeBuffer.Length})={setOutPaddedErr}, SetOut(78)={setOut78Err}, WriteFile({writeBuffer.Length})={writeError}";
             }
 
             if (disconnectedPaths is not null)
