@@ -24,6 +24,7 @@ public sealed class DualSenseHidManager : IDisposable
     private readonly object _syncLock = new();
     private readonly Dictionary<string, OpenDualSenseDevice> _devices = new(StringComparer.OrdinalIgnoreCase);
     private string _lastDiagnosticReport = "Nenhuma varredura executada ainda.";
+    private string _lastWriteStatus = "Nenhum pacote enviado ainda.";
     private bool _disposed;
 
     public bool IsConnected
@@ -55,6 +56,17 @@ public sealed class DualSenseHidManager : IDisposable
             lock (_syncLock)
             {
                 return _lastDiagnosticReport;
+            }
+        }
+    }
+
+    public string LastWriteStatus
+    {
+        get
+        {
+            lock (_syncLock)
+            {
+                return _lastWriteStatus;
             }
         }
     }
@@ -184,21 +196,41 @@ public sealed class DualSenseHidManager : IDisposable
                 if (written && bytesWritten == writeBuffer.Length)
                 {
                     anySucceeded = true;
+                    _lastWriteStatus = $"WriteFile({writeBuffer.Length} bytes): OK (enviados={bytesWritten})";
                     continue;
                 }
 
                 int writeError = Marshal.GetLastWin32Error();
                 if (IsDisconnectError(writeError))
                 {
+                    _lastWriteStatus = $"WriteFile({writeBuffer.Length} bytes): Desconectado (err={writeError})";
                     disconnectedPaths ??= [];
                     disconnectedPaths.Add(device.DevicePath);
                     continue;
                 }
 
-                // Fallback to HidD_SetOutputReport if WriteFile is rejected by the BT stack
+                // Fallback 1: try WriteFile with exact 78-byte report length
+                if (writeBuffer.Length != report.Length &&
+                    NativeMethods.WriteFile(device.Handle, report, (uint)report.Length, out uint rawWritten, IntPtr.Zero) &&
+                    rawWritten == report.Length)
+                {
+                    anySucceeded = true;
+                    _lastWriteStatus = $"WriteFile({writeBuffer.Length}) err={writeError}; WriteFile(78): OK";
+                    continue;
+                }
+
+                int rawError = Marshal.GetLastWin32Error();
+
+                // Fallback 2: HidD_SetOutputReport with 78-byte report
                 if (NativeMethods.HidD_SetOutputReport(device.Handle, report, report.Length))
                 {
                     anySucceeded = true;
+                    _lastWriteStatus = $"WriteFile({writeBuffer.Length}) err={writeError}; HidD_SetOutputReport(78): OK";
+                }
+                else
+                {
+                    int setOutError = Marshal.GetLastWin32Error();
+                    _lastWriteStatus = $"FALHA envio: WriteFile({writeBuffer.Length}) err={writeError}, WriteFile(78) err={rawError}, SetOutputReport err={setOutError}";
                 }
             }
 

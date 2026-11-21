@@ -34,6 +34,7 @@ public sealed class TriggerDaemonService : IDisposable
 
     private TriggerPairConfig? _lastSentPair;
     private string _activeProfileDisplay = DefaultProfileLabel;
+    private string _lastForegroundExe = "(nenhum)";
     private bool _hasActiveGameProfile;
     private bool _isCurrentAppIgnored;
     private bool _isPaused;
@@ -43,7 +44,11 @@ public sealed class TriggerDaemonService : IDisposable
 
     public string ProfilesFilePath => _profileManager.ConfigFilePath;
     public bool IsPaused => _isPaused;
-    public string GetHidDiagnosticReport() => _hidManager.LastDiagnosticReport;
+    public string GetHidDiagnosticReport() =>
+        $"{_hidManager.LastDiagnosticReport}\n\n" +
+        $"Última janela em foco: {_lastForegroundExe}\n" +
+        $"Perfil ativo: {_activeProfileDisplay}\n" +
+        $"Último envio HID: {_hidManager.LastWriteStatus}";
 
     public void ForceRescanDevices()
     {
@@ -243,6 +248,8 @@ public sealed class TriggerDaemonService : IDisposable
 
     private void ApplyForExecutable(string? executableName, bool forceSend)
     {
+        _lastForegroundExe = string.IsNullOrWhiteSpace(executableName) ? "(desconhecido)" : executableName;
+
         if (_profileManager.TryGetProfile(executableName, out GameProfile? matchedProfile) &&
             matchedProfile is not null)
         {
