@@ -1,7 +1,13 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DualSenseBTTriggers.Config;
+
+public sealed record TriggerPresetDefinition(
+    string Id,
+    string DisplayName,
+    Func<string, GameProfile> CreateProfile);
 
 public sealed class ProfileManager
 {
@@ -12,7 +18,72 @@ public sealed class ProfileManager
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         WriteIndented = true
+    };
+
+    public static IReadOnlyList<TriggerPresetDefinition> BuiltInPresets { get; } = new List<TriggerPresetDefinition>
+    {
+        new(
+            "shooter",
+            "Tiro / Ação (L2 Mira + R2 Arma)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Tiro / Ação)",
+                Ignore = false,
+                L2 = new TriggerEffectConfig { Mode = "continuous", Params = [30, 140, 0] },
+                R2 = new TriggerEffectConfig { Mode = "weapon", Params = [40, 120, 200] }
+            }),
+        new(
+            "heavy_shooter",
+            "Tiro Pesado / Shotgun (L2 Firme + R2 Forte)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Tiro Pesado)",
+                Ignore = false,
+                L2 = new TriggerEffectConfig { Mode = "continuous", Params = [20, 190, 0] },
+                R2 = new TriggerEffectConfig { Mode = "weapon", Params = [30, 110, 255] }
+            }),
+        new(
+            "machine_gun",
+            "Metralhadora / Vibração (L2 Mira + R2 Vibração)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Metralhadora)",
+                Ignore = false,
+                L2 = new TriggerEffectConfig { Mode = "continuous", Params = [30, 140, 0] },
+                R2 = new TriggerEffectConfig { Mode = "vibration", Params = [25, 210, 30] }
+            }),
+        new(
+            "racing",
+            "Corrida (L2 Freio + R2 Acelerador)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Corrida)",
+                Ignore = false,
+                L2 = new TriggerEffectConfig { Mode = "continuous", Params = [15, 190, 0] },
+                R2 = new TriggerEffectConfig { Mode = "continuous", Params = [10, 90, 0] }
+            }),
+        new(
+            "bow",
+            "Arco / Resistência Dupla (L2 + R2 Contínuos)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Arco / Duplo)",
+                Ignore = false,
+                L2 = new TriggerEffectConfig { Mode = "continuous", Params = [25, 170, 0] },
+                R2 = new TriggerEffectConfig { Mode = "continuous", Params = [20, 210, 0] }
+            }),
+        new(
+            "ignore",
+            "Ignorar (Suporte Nativo Sem Fio)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Suporte Nativo)",
+                Ignore = true,
+                L2 = null,
+                R2 = null
+            })
     };
 
     private const string DefaultProfilesJson = """
@@ -134,6 +205,49 @@ public sealed class ProfileManager
         }
 
         return CurrentConfig.Profiles.TryGetValue(executableName, out profile);
+    }
+
+    public bool UpsertProfile(string executableName, GameProfile profile, out string? errorMessage)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executableName);
+        ArgumentNullException.ThrowIfNull(profile);
+
+        string cleanExe = executableName.Trim();
+        CurrentConfig.Profiles[cleanExe] = profile;
+        return SaveConfig(out errorMessage);
+    }
+
+    public bool RemoveProfile(string executableName, out string? errorMessage)
+    {
+        errorMessage = null;
+        if (string.IsNullOrWhiteSpace(executableName))
+        {
+            return false;
+        }
+
+        if (!CurrentConfig.Profiles.Remove(executableName.Trim()))
+        {
+            return true;
+        }
+
+        return SaveConfig(out errorMessage);
+    }
+
+    private bool SaveConfig(out string? errorMessage)
+    {
+        errorMessage = null;
+
+        try
+        {
+            string json = JsonSerializer.Serialize(CurrentConfig, SerializerOptions);
+            File.WriteAllText(ConfigFilePath, json + Environment.NewLine, new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Erro ao salvar {ConfigFileName}: {ex.Message}";
+            return false;
+        }
     }
 
     private static AppConfig Normalize(AppConfig raw)

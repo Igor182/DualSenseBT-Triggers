@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using DualSenseBTTriggers.Config;
 using DualSenseBTTriggers.Services;
 using Microsoft.Win32;
 
@@ -20,6 +21,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _statusMenuItem;
     private readonly ToolStripMenuItem _profileMenuItem;
     private readonly ToolStripMenuItem _pauseResumeMenuItem;
+    private readonly ToolStripMenuItem _recentGamesMenuItem;
     private readonly ToolStripMenuItem _reloadMenuItem;
     private readonly ToolStripMenuItem _openProfilesMenuItem;
     private readonly ToolStripMenuItem _startupMenuItem;
@@ -51,6 +53,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
 
         _pauseResumeMenuItem = new ToolStripMenuItem("Pausar", null, OnPauseResumeClicked);
+        _recentGamesMenuItem = new ToolStripMenuItem("Adicionar / Configurar jogo recente");
         _reloadMenuItem = new ToolStripMenuItem("Recarregar profiles.json", null, OnReloadClicked);
         _openProfilesMenuItem = new ToolStripMenuItem("Abrir profiles.json", null, OnOpenProfilesClicked);
 
@@ -65,13 +68,16 @@ public sealed class TrayApplicationContext : ApplicationContext
         _exitMenuItem = new ToolStripMenuItem("Sair", null, OnExitClicked);
 
         _contextMenu = new ContextMenuStrip();
+        _contextMenu.Opening += OnContextMenuOpening;
         _contextMenu.Items.AddRange(new ToolStripItem[]
         {
             _statusMenuItem,
             _profileMenuItem,
             new ToolStripSeparator(),
-            _pauseResumeMenuItem,
+            _recentGamesMenuItem,
             _testTriggersMenuItem,
+            _pauseResumeMenuItem,
+            new ToolStripSeparator(),
             _reloadMenuItem,
             _openProfilesMenuItem,
             new ToolStripSeparator(),
@@ -126,6 +132,107 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void OnPauseResumeClicked(object? sender, EventArgs e)
     {
         _daemon.TogglePause();
+    }
+
+    private void OnContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        RebuildRecentGamesSubmenu();
+    }
+
+    private void RebuildRecentGamesSubmenu()
+    {
+        _recentGamesMenuItem.DropDownItems.Clear();
+
+        IReadOnlyList<RecentAppEntry> entries = _daemon.GetRecentAndConfiguredApps();
+        if (entries.Count == 0)
+        {
+            var emptyItem = new ToolStripMenuItem("Nenhuma janela recente detectada")
+            {
+                Enabled = false
+            };
+            _recentGamesMenuItem.DropDownItems.Add(emptyItem);
+            return;
+        }
+
+        bool addedSeparatorForSaved = false;
+        bool hasRecentSessionApps = entries.Any(x => x.IsRecentSessionApp);
+
+        foreach (RecentAppEntry entry in entries)
+        {
+            if (!entry.IsRecentSessionApp && hasRecentSessionApps && !addedSeparatorForSaved)
+            {
+                _recentGamesMenuItem.DropDownItems.Add(new ToolStripSeparator());
+                addedSeparatorForSaved = true;
+            }
+
+            string label = entry.ConfiguredProfile is not null
+                ? $"{entry.ExecutableName}  ✓ [{entry.ConfiguredProfile.Name}]"
+                : entry.ExecutableName;
+
+            var appMenuItem = new ToolStripMenuItem(label);
+
+            foreach (TriggerPresetDefinition preset in ProfileManager.BuiltInPresets)
+            {
+                TriggerPresetDefinition capturedPreset = preset;
+                string capturedExe = entry.ExecutableName;
+
+                var presetItem = new ToolStripMenuItem(
+                    capturedPreset.DisplayName,
+                    null,
+                    (_, _) => OnApplyPresetClicked(capturedExe, capturedPreset));
+
+                appMenuItem.DropDownItems.Add(presetItem);
+            }
+
+            if (entry.ConfiguredProfile is not null)
+            {
+                string capturedExe = entry.ExecutableName;
+                appMenuItem.DropDownItems.Add(new ToolStripSeparator());
+                var removeItem = new ToolStripMenuItem(
+                    "Remover perfil (voltar ao padrão)",
+                    null,
+                    (_, _) => OnRemoveProfileClicked(capturedExe));
+                appMenuItem.DropDownItems.Add(removeItem);
+            }
+
+            _recentGamesMenuItem.DropDownItems.Add(appMenuItem);
+        }
+    }
+
+    private void OnApplyPresetClicked(string executableName, TriggerPresetDefinition preset)
+    {
+        if (_daemon.ApplyPresetToExecutable(executableName, preset, out string? errorMessage))
+        {
+            ShowBalloon(
+                "Perfil salvo e aplicado",
+                $"{executableName}: {preset.DisplayName}",
+                ToolTipIcon.Info);
+        }
+        else
+        {
+            ShowBalloon(
+                "Erro ao salvar perfil",
+                errorMessage ?? "Não foi possível salvar no profiles.json.",
+                ToolTipIcon.Error);
+        }
+    }
+
+    private void OnRemoveProfileClicked(string executableName)
+    {
+        if (_daemon.RemoveExecutableProfile(executableName, out string? errorMessage))
+        {
+            ShowBalloon(
+                "Perfil removido",
+                $"{executableName} voltou para o perfil padrão.",
+                ToolTipIcon.Info);
+        }
+        else
+        {
+            ShowBalloon(
+                "Erro ao remover perfil",
+                errorMessage ?? "Não foi possível atualizar o profiles.json.",
+                ToolTipIcon.Error);
+        }
     }
 
     private void OnReloadClicked(object? sender, EventArgs e)

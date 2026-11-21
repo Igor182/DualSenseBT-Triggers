@@ -18,6 +18,11 @@ public sealed record DaemonStatusSnapshot(
     bool IsPaused,
     TrayVisualState VisualState);
 
+public sealed record RecentAppEntry(
+    string ExecutableName,
+    GameProfile? ConfiguredProfile,
+    bool IsRecentSessionApp);
+
 /// <summary>
 /// Coordinates event-driven hardware discovery, foreground window tracking, profile resolution,
 /// and Bluetooth HID adaptive trigger packet dispatch.
@@ -25,12 +30,34 @@ public sealed record DaemonStatusSnapshot(
 public sealed class TriggerDaemonService : IDisposable
 {
     private const string DefaultProfileLabel = "Padrão / Livre";
+    private const int MaxRecentExecutables = 12;
+
+    private static readonly HashSet<string> IgnoredSystemExecutables = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "DualSenseBT-Triggers.exe",
+        "explorer.exe",
+        "SearchHost.exe",
+        "ShellExperienceHost.exe",
+        "StartMenuExperienceHost.exe",
+        "ApplicationFrameHost.exe",
+        "LockApp.exe",
+        "Taskmgr.exe",
+        "SystemSettings.exe",
+        "TextInputHost.exe",
+        "dwm.exe",
+        "sihost.exe",
+        "conhost.exe",
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe"
+    };
 
     private readonly ProfileManager _profileManager;
     private readonly DualSenseHidManager _hidManager;
     private readonly DualSensePacketBuilder _packetBuilder;
     private readonly DeviceWatcher _deviceWatcher;
     private readonly ForegroundWindowMonitor _windowMonitor;
+    private readonly List<string> _recentExecutables = new();
 
     private TriggerPairConfig? _lastSentPair;
     private string _activeProfileDisplay = DefaultProfileLabel;
@@ -223,6 +250,79 @@ public sealed class TriggerDaemonService : IDisposable
         return ok;
     }
 
+    public IReadOnlyList<RecentAppEntry> GetRecentAndConfiguredApps()
+    {
+        var results = new List<RecentAppEntry>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string exe in _recentExecutables)
+        {
+            if (seen.Add(exe))
+            {
+                _profileManager.TryGetProfile(exe, out GameProfile? profile);
+                results.Add(new RecentAppEntry(exe, profile, IsRecentSessionApp: true));
+            }
+        }
+
+        foreach (KeyValuePair<string, GameProfile> kvp in _profileManager.CurrentConfig.Profiles)
+        {
+            if (seen.Add(kvp.Key))
+            {
+                results.Add(new RecentAppEntry(kvp.Key, kvp.Value, IsRecentSessionApp: false));
+            }
+        }
+
+        return results;
+    }
+
+    public bool ApplyPresetToExecutable(
+        string executableName,
+        TriggerPresetDefinition preset,
+        out string? errorMessage)
+    {
+        if (_disposed)
+        {
+            errorMessage = "Serviço encerrado.";
+            return false;
+        }
+
+        GameProfile profile = preset.CreateProfile(executableName);
+        if (!_profileManager.UpsertProfile(executableName, profile, out errorMessage))
+        {
+            return false;
+        }
+
+        // Immediately send the preset to the controller so the user can feel it right away
+        if (!_isPaused && !profile.Ignore)
+        {
+            _lastSentPair = null;
+            SendTriggerPair(profile.ToTriggerPair(), forceSend: true);
+        }
+
+        RaiseStateChanged();
+        return true;
+    }
+
+    public bool RemoveExecutableProfile(string executableName, out string? errorMessage)
+    {
+        if (_disposed)
+        {
+            errorMessage = "Serviço encerrado.";
+            return false;
+        }
+
+        if (!_profileManager.RemoveProfile(executableName, out errorMessage))
+        {
+            return false;
+        }
+
+        _lastSentPair = null;
+        string? currentExe = _windowMonitor.GetCurrentForegroundExecutable();
+        ApplyForExecutable(currentExe, forceSend: true);
+        RaiseStateChanged();
+        return true;
+    }
+
     /// <summary>
     /// Sends a final reset (off) report to L2 and R2 before closing HID handles.
     /// </summary>
@@ -288,6 +388,7 @@ public sealed class TriggerDaemonService : IDisposable
     private void ApplyForExecutable(string? executableName, bool forceSend)
     {
         _lastForegroundExe = string.IsNullOrWhiteSpace(executableName) ? "(desconhecido)" : executableName;
+        TrackRecentExecutable(executableName);
 
         if (_profileManager.TryGetProfile(executableName, out GameProfile? matchedProfile) &&
             matchedProfile is not null)
@@ -352,6 +453,28 @@ public sealed class TriggerDaemonService : IDisposable
         {
             _lastSentPair = null;
             RaiseStateChanged();
+        }
+    }
+
+    private void TrackRecentExecutable(string? executableName)
+    {
+        if (string.IsNullOrWhiteSpace(executableName))
+        {
+            return;
+        }
+
+        string clean = executableName.Trim();
+        if (IgnoredSystemExecutables.Contains(clean))
+        {
+            return;
+        }
+
+        _recentExecutables.RemoveAll(e => string.Equals(e, clean, StringComparison.OrdinalIgnoreCase));
+        _recentExecutables.Insert(0, clean);
+
+        if (_recentExecutables.Count > MaxRecentExecutables)
+        {
+            _recentExecutables.RemoveRange(MaxRecentExecutables, _recentExecutables.Count - MaxRecentExecutables);
         }
     }
 
