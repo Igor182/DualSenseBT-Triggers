@@ -65,6 +65,16 @@ public sealed class ProfileManager
                 R2 = new TriggerEffectConfig { Mode = "continuous", Params = [10, 90, 0] }
             }),
         new(
+            "sports",
+            "Futebol / Esporte (L2 Médio + R2 Leve)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Esporte)",
+                Ignore = false,
+                L2 = new TriggerEffectConfig { Mode = "continuous", Params = [25, 130, 0] },
+                R2 = new TriggerEffectConfig { Mode = "continuous", Params = [20, 75, 0] }
+            }),
+        new(
             "bow",
             "Arco / Resistência Dupla (L2 + R2 Contínuos)",
             exe => new GameProfile
