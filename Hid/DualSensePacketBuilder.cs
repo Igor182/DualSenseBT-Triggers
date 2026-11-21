@@ -11,20 +11,20 @@ public sealed class DualSensePacketBuilder
 {
     public const int BluetoothOutputReportLength = 78;
     public const byte BluetoothReportId = 0x31;
-    public const byte BluetoothSequenceTag = 0x02;
+    public const byte BluetoothOutputTag = 0x10; // DS_OUTPUT_TAG required by DualSense BT firmware
 
-    // Valid Flag 0: 0x04 (R2 trigger) | 0x08 (L2 trigger) = 0x0C.
+    // Valid Flag 0 (byte[3]): 0x04 (R2 trigger) | 0x08 (L2 trigger) = 0x0C.
     // Bits 0x01 and 0x02 (vibration motors) remain 0 to avoid conflicting with native/Steam rumble.
     public const byte ValidFlag0TriggersOnly = 0x0C;
 
-    // Valid Flag 1: 0x00 so Steam/games can control LEDs/Lightbar without resetting triggers.
+    // Valid Flag 1 (byte[4]): 0x00 so Steam/games can control LEDs/Lightbar without resetting triggers.
     public const byte ValidFlag1None = 0x00;
 
-    // R2 block: byte[11] (mode) + byte[12..20] (9 effect params) + byte[21] (0x00)
-    public const int RightTriggerOffset = 11;
+    // R2 block: byte[13] (mode) + byte[14..22] (9 effect params) + byte[23] (0x00)
+    public const int RightTriggerOffset = 13;
 
-    // L2 block: byte[22] (mode) + byte[23..31] (9 effect params) + byte[32] (0x00)
-    public const int LeftTriggerOffset = 22;
+    // L2 block: byte[24] (mode) + byte[25..33] (9 effect params) + byte[34] (0x00)
+    public const int LeftTriggerOffset = 24;
 
     // CRC-32 occupies bytes 74..77 (Little-Endian)
     public const int CrcOffset = 74;
@@ -34,6 +34,7 @@ public sealed class DualSensePacketBuilder
 
     private const uint Crc32Polynomial = 0xEDB88320u;
     private static readonly uint[] Crc32Table = BuildCrc32Table();
+    private byte _sequenceCounter;
 
     public byte[] BuildTriggerPacket(TriggerPairConfig pair)
     {
@@ -49,9 +50,10 @@ public sealed class DualSensePacketBuilder
         byte[] buffer = new byte[BluetoothOutputReportLength];
 
         buffer[0] = BluetoothReportId;
-        buffer[1] = BluetoothSequenceTag;
-        buffer[2] = ValidFlag0TriggersOnly;
-        buffer[3] = ValidFlag1None;
+        buffer[1] = (byte)((_sequenceCounter++ & 0x0F) << 4);
+        buffer[2] = BluetoothOutputTag;
+        buffer[3] = ValidFlag0TriggersOnly;
+        buffer[4] = ValidFlag1None;
 
         WriteTriggerBlock(buffer, RightTriggerOffset, r2);
         WriteTriggerBlock(buffer, LeftTriggerOffset, l2);
