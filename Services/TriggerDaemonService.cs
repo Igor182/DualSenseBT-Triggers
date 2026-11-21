@@ -68,6 +68,45 @@ public sealed class TriggerDaemonService : IDisposable
         RaiseStateChanged();
     }
 
+    public string SendManualTestPacket()
+    {
+        if (_disposed)
+        {
+            return "Serviço encerrado.";
+        }
+
+        _ = _hidManager.RefreshDevices();
+        if (!_hidManager.IsConnected)
+        {
+            return "Nenhum DualSense Bluetooth conectado.";
+        }
+
+        var testPair = new TriggerPairConfig
+        {
+            L2 = new TriggerEffectConfig { Mode = "continuous", Params = [20, 220, 0] },
+            R2 = new TriggerEffectConfig { Mode = "weapon", Params = [30, 120, 255] }
+        };
+
+        byte[] packet = _packetBuilder.BuildTriggerPacket(testPair);
+        bool sent = _hidManager.SendOutputReport(packet, out _);
+        return sent
+            ? $"Pacote de teste enviado!\n\n{_hidManager.LastWriteStatus}\n\nTeste L2 (resistência contínua) e R2 (clique de arma) ANTES de clicar em OK."
+            : $"Falha ao enviar pacote de teste.\n\n{_hidManager.LastWriteStatus}";
+    }
+
+    public void ReapplyCurrentForegroundProfile()
+    {
+        if (_disposed || _isPaused)
+        {
+            return;
+        }
+
+        _lastSentPair = null;
+        string? currentExe = _windowMonitor.GetCurrentForegroundExecutable();
+        ApplyForExecutable(currentExe, forceSend: true);
+        RaiseStateChanged();
+    }
+
     public TriggerDaemonService()
     {
         _profileManager = new ProfileManager();
@@ -164,6 +203,45 @@ public sealed class TriggerDaemonService : IDisposable
         RaiseStateChanged();
     }
 
+    public string SendManualTestPacket()
+    {
+        if (_disposed)
+        {
+            return "Serviço encerrado.";
+        }
+
+        _ = _hidManager.RefreshDevices();
+        if (!_hidManager.IsConnected)
+        {
+            return "Nenhum DualSense Bluetooth conectado.";
+        }
+
+        var testPair = new TriggerPairConfig
+        {
+            L2 = new TriggerEffectConfig { Mode = "continuous", Params = [20, 220, 0] },
+            R2 = new TriggerEffectConfig { Mode = "weapon", Params = [30, 120, 255] }
+        };
+
+        byte[] packet = _packetBuilder.BuildTriggerPacket(testPair);
+        bool sent = _hidManager.SendOutputReport(packet, out _);
+        return sent
+            ? $"Pacote de teste enviado!\n\n{_hidManager.LastWriteStatus}\n\nTeste L2 (resistência contínua) e R2 (clique de arma) ANTES de clicar em OK."
+            : $"Falha ao enviar pacote de teste.\n\n{_hidManager.LastWriteStatus}";
+    }
+
+    public void ReapplyCurrentForegroundProfile()
+    {
+        if (_disposed || _isPaused)
+        {
+            return;
+        }
+
+        _lastSentPair = null;
+        string? currentExe = _windowMonitor.GetCurrentForegroundExecutable();
+        ApplyForExecutable(currentExe, forceSend: true);
+        RaiseStateChanged();
+    }
+
     public bool ReloadProfiles(out string? errorMessage)
     {
         if (_disposed)
@@ -243,6 +321,45 @@ public sealed class TriggerDaemonService : IDisposable
         }
 
         ApplyForExecutable(executableName, forceSend: false);
+        RaiseStateChanged();
+    }
+
+    public string SendManualTestPacket()
+    {
+        if (_disposed)
+        {
+            return "Serviço encerrado.";
+        }
+
+        _ = _hidManager.RefreshDevices();
+        if (!_hidManager.IsConnected)
+        {
+            return "Nenhum DualSense Bluetooth conectado.";
+        }
+
+        var testPair = new TriggerPairConfig
+        {
+            L2 = new TriggerEffectConfig { Mode = "continuous", Params = [20, 220, 0] },
+            R2 = new TriggerEffectConfig { Mode = "weapon", Params = [30, 120, 255] }
+        };
+
+        byte[] packet = _packetBuilder.BuildTriggerPacket(testPair);
+        bool sent = _hidManager.SendOutputReport(packet, out _);
+        return sent
+            ? $"Pacote de teste enviado!\n\n{_hidManager.LastWriteStatus}\n\nTeste L2 (resistência contínua) e R2 (clique de arma) ANTES de clicar em OK."
+            : $"Falha ao enviar pacote de teste.\n\n{_hidManager.LastWriteStatus}";
+    }
+
+    public void ReapplyCurrentForegroundProfile()
+    {
+        if (_disposed || _isPaused)
+        {
+            return;
+        }
+
+        _lastSentPair = null;
+        string? currentExe = _windowMonitor.GetCurrentForegroundExecutable();
+        ApplyForExecutable(currentExe, forceSend: true);
         RaiseStateChanged();
     }
 

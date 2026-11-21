@@ -186,28 +186,7 @@ public sealed class DualSenseHidManager : IDisposable
                     Buffer.BlockCopy(report, 0, writeBuffer, 0, report.Length);
                 }
 
-                // On Windows Bluetooth, HidD_SetOutputReport (control pipe) is much more reliable
-                // than WriteFile (interrupt pipe), because many BT adapters silently drop WriteFile.
-                if (NativeMethods.HidD_SetOutputReport(device.Handle, writeBuffer, writeBuffer.Length))
-                {
-                    anySucceeded = true;
-                    _lastWriteStatus = $"HidD_SetOutputReport({writeBuffer.Length} bytes): OK";
-                    continue;
-                }
-
-                int setOutPaddedErr = Marshal.GetLastWin32Error();
-
-                if (writeBuffer.Length != report.Length &&
-                    NativeMethods.HidD_SetOutputReport(device.Handle, report, report.Length))
-                {
-                    anySucceeded = true;
-                    _lastWriteStatus = $"HidD_SetOutputReport(78 bytes): OK (padded err={setOutPaddedErr})";
-                    continue;
-                }
-
-                int setOut78Err = Marshal.GetLastWin32Error();
-
-                // Fallback to WriteFile (interrupt pipe)
+                // Try WriteFile (Interrupt Pipe, 0xA2 DATA | OUTPUT) first, which matches the 0xA2 CRC-32 seed.
                 bool written = NativeMethods.WriteFile(
                     device.Handle,
                     writeBuffer,
@@ -218,7 +197,7 @@ public sealed class DualSenseHidManager : IDisposable
                 if (written && bytesWritten == writeBuffer.Length)
                 {
                     anySucceeded = true;
-                    _lastWriteStatus = $"WriteFile({writeBuffer.Length} bytes): OK (SetOutputReport err={setOutPaddedErr}/{setOut78Err})";
+                    _lastWriteStatus = $"WriteFile({writeBuffer.Length} bytes): OK (enviados={bytesWritten})";
                     continue;
                 }
 
@@ -231,7 +210,26 @@ public sealed class DualSenseHidManager : IDisposable
                     continue;
                 }
 
-                _lastWriteStatus = $"FALHA envio: SetOut({writeBuffer.Length})={setOutPaddedErr}, SetOut(78)={setOut78Err}, WriteFile({writeBuffer.Length})={writeError}";
+                // Fallback: HidD_SetOutputReport (Control Pipe)
+                if (NativeMethods.HidD_SetOutputReport(device.Handle, writeBuffer, writeBuffer.Length))
+                {
+                    anySucceeded = true;
+                    _lastWriteStatus = $"HidD_SetOutputReport({writeBuffer.Length} bytes): OK (WriteFile err={writeError})";
+                    continue;
+                }
+
+                int setOutPaddedErr = Marshal.GetLastWin32Error();
+
+                if (writeBuffer.Length != report.Length &&
+                    NativeMethods.HidD_SetOutputReport(device.Handle, report, report.Length))
+                {
+                    anySucceeded = true;
+                    _lastWriteStatus = $"HidD_SetOutputReport(78 bytes): OK (WriteFile err={writeError}, padded err={setOutPaddedErr})";
+                    continue;
+                }
+
+                int setOut78Err = Marshal.GetLastWin32Error();
+                _lastWriteStatus = $"FALHA envio: WriteFile({writeBuffer.Length})={writeError}, SetOut({writeBuffer.Length})={setOutPaddedErr}, SetOut(78)={setOut78Err}";
             }
 
             if (disconnectedPaths is not null)

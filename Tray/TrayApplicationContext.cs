@@ -23,6 +23,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _reloadMenuItem;
     private readonly ToolStripMenuItem _openProfilesMenuItem;
     private readonly ToolStripMenuItem _startupMenuItem;
+    private readonly ToolStripMenuItem _testTriggersMenuItem;
     private readonly ToolStripMenuItem _diagnosticMenuItem;
     private readonly ToolStripMenuItem _exitMenuItem;
 
@@ -59,6 +60,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             Checked = StartupManager.IsEnabled()
         };
 
+        _testTriggersMenuItem = new ToolStripMenuItem("Testar gatilhos agora", null, OnTestTriggersClicked);
         _diagnosticMenuItem = new ToolStripMenuItem("Diagnóstico HID (rebuscar)", null, OnDiagnosticClicked);
         _exitMenuItem = new ToolStripMenuItem("Sair", null, OnExitClicked);
 
@@ -69,6 +71,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             _profileMenuItem,
             new ToolStripSeparator(),
             _pauseResumeMenuItem,
+            _testTriggersMenuItem,
             _reloadMenuItem,
             _openProfilesMenuItem,
             new ToolStripSeparator(),
@@ -176,6 +179,17 @@ public sealed class TrayApplicationContext : ApplicationContext
                 errorMessage ?? "Não foi possível alterar a configuração de inicialização.",
                 ToolTipIcon.Error);
         }
+    }
+
+    private void OnTestTriggersClicked(object? sender, EventArgs e)
+    {
+        string result = _daemon.SendManualTestPacket();
+        MessageBox.Show(
+            result,
+            "DualSenseBT-Triggers — Teste de Gatilhos",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+        _daemon.ReapplyCurrentForegroundProfile();
     }
 
     private void OnDiagnosticClicked(object? sender, EventArgs e)
