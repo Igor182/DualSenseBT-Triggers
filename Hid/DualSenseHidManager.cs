@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using DualSenseBTTriggers.Native;
 using Microsoft.Win32.SafeHandles;
 
@@ -22,6 +23,7 @@ public sealed class DualSenseHidManager : IDisposable
 
     private readonly object _syncLock = new();
     private readonly Dictionary<string, OpenDualSenseDevice> _devices = new(StringComparer.OrdinalIgnoreCase);
+    private string _lastDiagnosticReport = "Nenhuma varredura executada ainda.";
     private bool _disposed;
 
     public bool IsConnected
@@ -46,6 +48,17 @@ public sealed class DualSenseHidManager : IDisposable
         }
     }
 
+    public string LastDiagnosticReport
+    {
+        get
+        {
+            lock (_syncLock)
+            {
+                return _lastDiagnosticReport;
+            }
+        }
+    }
+
     public IReadOnlyList<ConnectedDualSenseInfo> GetConnectedDevices()
     {
         lock (_syncLock)
@@ -58,7 +71,8 @@ public sealed class DualSenseHidManager : IDisposable
 
     /// <summary>
     /// Scans Windows HID interfaces via SetupAPI and reconciles open Bluetooth DualSense handles.
-    /// Bluetooth connections are strictly distinguished from USB via OutputReportByteLength == 78.
+    /// Bluetooth DualSense is distinguished from USB (48/64 bytes) by OutputReportByteLength >= 78
+    /// (typically 78 or 547 depending on firmware/Windows BT stack).
     /// </summary>
     public HidScanResult RefreshDevices()
     {
@@ -69,12 +83,12 @@ public sealed class DualSenseHidManager : IDisposable
                 return new HidScanResult(false, false, 0);
             }
 
-            Dictionary<string, DiscoveredBluetoothDevice> discovered = EnumerateBluetoothDualSenseDevices();
+            var diag = new StringBuilder();
+            Dictionary<string, DiscoveredBluetoothDevice> discovered = EnumerateBluetoothDualSenseDevices(diag);
 
             bool anyRemoved = false;
             bool anyAdded = false;
 
-            // Close and remove devices that are no longer present
             List<string> stalePaths = _devices.Keys
                 .Where(path => !discovered.ContainsKey(path))
                 .ToList();
@@ -88,7 +102,6 @@ public sealed class DualSenseHidManager : IDisposable
                 }
             }
 
-            // Open newly arrived Bluetooth DualSense devices
             foreach (DiscoveredBluetoothDevice candidate in discovered.Values)
             {
                 if (_devices.ContainsKey(candidate.DevicePath))
@@ -96,21 +109,32 @@ public sealed class DualSenseHidManager : IDisposable
                     continue;
                 }
 
-                OpenDualSenseDevice? opened = TryOpenDevice(candidate);
+                OpenDualSenseDevice? opened = TryOpenDevice(candidate, out int openError);
                 if (opened is not null)
                 {
                     _devices[candidate.DevicePath] = opened;
                     anyAdded = true;
+                    diag.AppendLine($"  -> Aberto com sucesso (OutputLen={candidate.OutputReportByteLength}).");
+                }
+                else
+                {
+                    diag.AppendLine($"  -> Falha CreateFile(RW): Win32Error={openError}.");
                 }
             }
 
+            if (discovered.Count == 0 && diag.Length == 0)
+            {
+                diag.AppendLine("Nenhum dispositivo Sony (VID 0x054C) encontrado na árvore HID.");
+            }
+
+            _lastDiagnosticReport = diag.ToString().TrimEnd();
             return new HidScanResult(anyAdded, anyRemoved, _devices.Count);
         }
     }
 
     /// <summary>
     /// Writes a 78-byte Bluetooth HID output report to all connected DualSense Bluetooth controllers.
-    /// Returns true if at least one controller received the report cleanly.
+    /// Pads the WriteFile buffer if the OS HID descriptor reports OutputReportByteLength > 78 (e.g. 547).
     /// </summary>
     public bool SendOutputReport(byte[] report, out bool connectionLost)
     {
@@ -143,25 +167,38 @@ public sealed class DualSenseHidManager : IDisposable
                     continue;
                 }
 
+                byte[] writeBuffer = report;
+                if (device.OutputReportByteLength > report.Length)
+                {
+                    writeBuffer = new byte[device.OutputReportByteLength];
+                    Buffer.BlockCopy(report, 0, writeBuffer, 0, report.Length);
+                }
+
                 bool written = NativeMethods.WriteFile(
                     device.Handle,
-                    report,
-                    (uint)report.Length,
+                    writeBuffer,
+                    (uint)writeBuffer.Length,
                     out uint bytesWritten,
                     IntPtr.Zero);
 
-                if (written && bytesWritten == report.Length)
+                if (written && bytesWritten == writeBuffer.Length)
                 {
                     anySucceeded = true;
+                    continue;
                 }
-                else
+
+                int writeError = Marshal.GetLastWin32Error();
+                if (IsDisconnectError(writeError))
                 {
-                    int error = Marshal.GetLastWin32Error();
-                    if (IsDisconnectError(error))
-                    {
-                        disconnectedPaths ??= [];
-                        disconnectedPaths.Add(device.DevicePath);
-                    }
+                    disconnectedPaths ??= [];
+                    disconnectedPaths.Add(device.DevicePath);
+                    continue;
+                }
+
+                // Fallback to HidD_SetOutputReport if WriteFile is rejected by the BT stack
+                if (NativeMethods.HidD_SetOutputReport(device.Handle, report, report.Length))
+                {
+                    anySucceeded = true;
                 }
             }
 
@@ -181,7 +218,7 @@ public sealed class DualSenseHidManager : IDisposable
         }
     }
 
-    private static Dictionary<string, DiscoveredBluetoothDevice> EnumerateBluetoothDualSenseDevices()
+    private static Dictionary<string, DiscoveredBluetoothDevice> EnumerateBluetoothDualSenseDevices(StringBuilder diag)
     {
         var found = new Dictionary<string, DiscoveredBluetoothDevice>(StringComparer.OrdinalIgnoreCase);
 
@@ -194,6 +231,7 @@ public sealed class DualSenseHidManager : IDisposable
 
         if (deviceInfoSet == IntPtr.Zero || deviceInfoSet == NativeMethods.InvalidHandleValue)
         {
+            diag.AppendLine($"SetupDiGetClassDevs falhou: Win32Error={Marshal.GetLastWin32Error()}");
             return found;
         }
 
@@ -220,7 +258,7 @@ public sealed class DualSenseHidManager : IDisposable
                     continue;
                 }
 
-                DiscoveredBluetoothDevice? probed = ProbeBluetoothDualSense(devicePath);
+                DiscoveredBluetoothDevice? probed = ProbeBluetoothDualSense(devicePath, diag);
                 if (probed is not null)
                 {
                     found[probed.DevicePath] = probed;
@@ -239,7 +277,6 @@ public sealed class DualSenseHidManager : IDisposable
         IntPtr deviceInfoSet,
         ref NativeMethods.SP_DEVICE_INTERFACE_DATA interfaceData)
     {
-        // Query required buffer size
         NativeMethods.SetupDiGetDeviceInterfaceDetail(
             deviceInfoSet,
             ref interfaceData,
@@ -256,7 +293,6 @@ public sealed class DualSenseHidManager : IDisposable
         IntPtr detailBuffer = Marshal.AllocHGlobal(requiredSize);
         try
         {
-            // SP_DEVICE_INTERFACE_DETAIL_DATA_W.cbSize is 8 bytes on x64 and 6 bytes on x86
             int structSize = IntPtr.Size == 8 ? 8 : 6;
             Marshal.WriteInt32(detailBuffer, structSize);
 
@@ -273,7 +309,6 @@ public sealed class DualSenseHidManager : IDisposable
                 return null;
             }
 
-            // DevicePath starts immediately after the 4-byte DWORD cbSize field
             return Marshal.PtrToStringUni(detailBuffer + 4);
         }
         finally
@@ -283,9 +318,9 @@ public sealed class DualSenseHidManager : IDisposable
     }
 
     /// <summary>
-    /// Probes HID metadata using access=0 (non-intrusive) to verify VID/PID and Bluetooth report size (78 bytes).
+    /// Probes HID metadata using access=0 (non-intrusive) to verify VID/PID and Bluetooth report capabilities.
     /// </summary>
-    private static DiscoveredBluetoothDevice? ProbeBluetoothDualSense(string devicePath)
+    private static DiscoveredBluetoothDevice? ProbeBluetoothDualSense(string devicePath, StringBuilder diag)
     {
         using SafeFileHandle probeHandle = NativeMethods.CreateFile(
             devicePath,
@@ -311,14 +346,21 @@ public sealed class DualSenseHidManager : IDisposable
             return null;
         }
 
-        if (attributes.VendorID != SonyVendorId || !IsSupportedProductId(attributes.ProductID))
+        if (attributes.VendorID != SonyVendorId)
         {
+            return null;
+        }
+
+        if (!IsSupportedProductId(attributes.ProductID))
+        {
+            diag.AppendLine($"Sony ignorado: PID=0x{attributes.ProductID:X4}");
             return null;
         }
 
         if (!NativeMethods.HidD_GetPreparsedData(probeHandle, out IntPtr preparsedData) ||
             preparsedData == IntPtr.Zero)
         {
+            diag.AppendLine($"DualSense PID=0x{attributes.ProductID:X4}: HidD_GetPreparsedData falhou (Win32Error={Marshal.GetLastWin32Error()})");
             return null;
         }
 
@@ -327,18 +369,26 @@ public sealed class DualSenseHidManager : IDisposable
             int status = NativeMethods.HidP_GetCaps(preparsedData, out NativeMethods.HIDP_CAPS caps);
             if (status != NativeMethods.HIDP_STATUS_SUCCESS)
             {
+                diag.AppendLine($"DualSense PID=0x{attributes.ProductID:X4}: HidP_GetCaps status=0x{status:X8}");
                 return null;
             }
 
-            // Bluetooth DualSense exposes OutputReportByteLength == 78 (USB exposes 48/64)
-            if (caps.OutputReportByteLength != DualSensePacketBuilder.BluetoothOutputReportLength)
+            diag.AppendLine(
+                $"DualSense encontrado: PID=0x{attributes.ProductID:X4}, UsagePage=0x{caps.UsagePage:X2}, Usage=0x{caps.Usage:X2}, " +
+                $"In={caps.InputReportByteLength}, Out={caps.OutputReportByteLength}, Feat={caps.FeatureReportByteLength}");
+
+            // USB DualSense uses OutputReportByteLength <= 64 (48 or 64).
+            // Bluetooth DualSense uses OutputReportByteLength >= 78 (78 or 547 depending on firmware/stack).
+            if (caps.OutputReportByteLength < DualSensePacketBuilder.BluetoothOutputReportLength)
             {
+                diag.AppendLine("  -> Ignorado: tratado como USB (OutputReportByteLength < 78).");
                 return null;
             }
 
             return new DiscoveredBluetoothDevice(
                 devicePath,
                 attributes.ProductID,
+                caps.OutputReportByteLength,
                 caps.FeatureReportByteLength);
         }
         finally
@@ -347,8 +397,10 @@ public sealed class DualSenseHidManager : IDisposable
         }
     }
 
-    private static OpenDualSenseDevice? TryOpenDevice(DiscoveredBluetoothDevice candidate)
+    private static OpenDualSenseDevice? TryOpenDevice(DiscoveredBluetoothDevice candidate, out int win32Error)
     {
+        win32Error = 0;
+
         // Shared access (FILE_SHARE_READ | FILE_SHARE_WRITE) ensures Windows, Steam Input,
         // and games keep uninterrupted access to the DualSense controller.
         SafeFileHandle handle = NativeMethods.CreateFile(
@@ -362,18 +414,18 @@ public sealed class DualSenseHidManager : IDisposable
 
         if (handle.IsInvalid)
         {
+            win32Error = Marshal.GetLastWin32Error();
             handle.Dispose();
             return null;
         }
 
-        // Best-effort read of Feature Report 0x05 (calibration) to ensure the DualSense
-        // transitions from basic BT mode into full extended 0x31 Bluetooth report mode.
         TryEnsureBluetoothExtendedMode(handle, candidate.FeatureReportByteLength);
 
         return new OpenDualSenseDevice(
             candidate.DevicePath,
             candidate.ProductId,
             GetModelName(candidate.ProductId),
+            candidate.OutputReportByteLength,
             handle);
     }
 
@@ -428,17 +480,20 @@ public sealed class DualSenseHidManager : IDisposable
     private sealed record DiscoveredBluetoothDevice(
         string DevicePath,
         ushort ProductId,
+        ushort OutputReportByteLength,
         ushort FeatureReportByteLength);
 
     private sealed class OpenDualSenseDevice(
         string devicePath,
         ushort productId,
         string modelName,
+        ushort outputReportByteLength,
         SafeFileHandle handle) : IDisposable
     {
         public string DevicePath { get; } = devicePath;
         public ushort ProductId { get; } = productId;
         public string ModelName { get; } = modelName;
+        public ushort OutputReportByteLength { get; } = outputReportByteLength;
         public SafeFileHandle Handle { get; } = handle;
 
         public void Dispose() => Handle.Dispose();

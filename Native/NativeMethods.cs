@@ -185,6 +185,13 @@ internal static class NativeMethods
         int reportBufferLength);
 
     [DllImport("hid.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool HidD_SetOutputReport(
+        SafeFileHandle hidDeviceObject,
+        byte[] reportBuffer,
+        int reportBufferLength);
+
+    [DllImport("hid.dll", ExactSpelling = true, SetLastError = true)]
     public static extern int HidP_GetCaps(
         IntPtr preparsedData,
         out HIDP_CAPS capabilities);

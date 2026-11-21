@@ -43,6 +43,25 @@ public sealed class TriggerDaemonService : IDisposable
 
     public string ProfilesFilePath => _profileManager.ConfigFilePath;
     public bool IsPaused => _isPaused;
+    public string GetHidDiagnosticReport() => _hidManager.LastDiagnosticReport;
+
+    public void ForceRescanDevices()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _ = _hidManager.RefreshDevices();
+        if (_hidManager.IsConnected && !_isPaused)
+        {
+            _lastSentPair = null;
+            string? currentExe = _windowMonitor.GetCurrentForegroundExecutable();
+            ApplyForExecutable(currentExe, forceSend: true);
+        }
+
+        RaiseStateChanged();
+    }
 
     public TriggerDaemonService()
     {
