@@ -31,6 +31,7 @@ public sealed class TriggerDaemonService : IDisposable
 {
     private const string DefaultProfileLabel = "Padrão / Livre";
     private const int MaxRecentExecutables = 12;
+    public const int DefaultKeepAliveIntervalMs = 500;
 
     private static readonly HashSet<string> IgnoredSystemExecutables = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -57,9 +58,11 @@ public sealed class TriggerDaemonService : IDisposable
     private readonly DualSensePacketBuilder _packetBuilder;
     private readonly DeviceWatcher _deviceWatcher;
     private readonly ForegroundWindowMonitor _windowMonitor;
+    private readonly System.Windows.Forms.Timer _keepAliveTimer;
     private readonly List<string> _recentExecutables = new();
 
     private TriggerPairConfig? _lastSentPair;
+    private TriggerPairConfig? _activeKeepAlivePair;
     private string _activeProfileDisplay = DefaultProfileLabel;
     private string _lastForegroundExe = "(nenhum)";
     private bool _hasActiveGameProfile;
@@ -102,6 +105,9 @@ public sealed class TriggerDaemonService : IDisposable
         _packetBuilder = new DualSensePacketBuilder();
         _deviceWatcher = new DeviceWatcher();
         _windowMonitor = new ForegroundWindowMonitor();
+
+        _keepAliveTimer = new System.Windows.Forms.Timer();
+        _keepAliveTimer.Tick += OnKeepAliveTick;
     }
 
     public bool Start(out string? configError)
@@ -175,6 +181,8 @@ public sealed class TriggerDaemonService : IDisposable
 
         if (_isPaused)
         {
+            StopKeepAlive();
+
             // Release triggers when pausing unless the focused game manages them natively.
             if (!_isCurrentAppIgnored)
             {
@@ -287,6 +295,11 @@ public sealed class TriggerDaemonService : IDisposable
         }
 
         GameProfile profile = preset.CreateProfile(executableName);
+        if (_profileManager.TryGetProfile(executableName, out GameProfile? existing) && existing is not null)
+        {
+            profile.KeepAliveMs = existing.KeepAliveMs;
+        }
+
         if (!_profileManager.UpsertProfile(executableName, profile, out errorMessage))
         {
             return false;
@@ -295,8 +308,55 @@ public sealed class TriggerDaemonService : IDisposable
         // Immediately send the preset to the controller so the user can feel it right away
         if (!_isPaused && !profile.Ignore)
         {
+            TriggerPairConfig pair = profile.ToTriggerPair();
             _lastSentPair = null;
-            SendTriggerPair(profile.ToTriggerPair(), forceSend: true);
+            SendTriggerPair(pair, forceSend: true);
+            ConfigureKeepAlive(profile.KeepAliveMs, pair);
+        }
+        else
+        {
+            StopKeepAlive();
+        }
+
+        RaiseStateChanged();
+        return true;
+    }
+
+    public bool ToggleKeepAlive(string executableName, out bool enabled, out string? errorMessage)
+    {
+        enabled = false;
+        errorMessage = null;
+
+        if (_disposed)
+        {
+            errorMessage = "Serviço encerrado.";
+            return false;
+        }
+
+        if (!_profileManager.TryGetProfile(executableName, out GameProfile? existing) || existing is null)
+        {
+            errorMessage = $"Perfil não encontrado para {executableName}.";
+            return false;
+        }
+
+        existing.KeepAliveMs = existing.KeepAliveMs > 0 ? 0 : DefaultKeepAliveIntervalMs;
+        enabled = existing.KeepAliveMs > 0;
+
+        if (!_profileManager.UpsertProfile(executableName, existing, out errorMessage))
+        {
+            return false;
+        }
+
+        if (!_isPaused && !existing.Ignore)
+        {
+            TriggerPairConfig pair = existing.ToTriggerPair();
+            _lastSentPair = null;
+            SendTriggerPair(pair, forceSend: true);
+            ConfigureKeepAlive(existing.KeepAliveMs, pair);
+        }
+        else
+        {
+            StopKeepAlive();
         }
 
         RaiseStateChanged();
@@ -396,6 +456,7 @@ public sealed class TriggerDaemonService : IDisposable
             if (matchedProfile.Ignore)
             {
                 // Native DualSense wireless support: send NO packet to the controller.
+                StopKeepAlive();
                 _activeProfileDisplay = $"{matchedProfile.Name} [Ignorado]";
                 _hasActiveGameProfile = true;
                 _isCurrentAppIgnored = true;
@@ -403,13 +464,21 @@ public sealed class TriggerDaemonService : IDisposable
                 return;
             }
 
-            _activeProfileDisplay = matchedProfile.Name;
+            _activeProfileDisplay = matchedProfile.KeepAliveMs > 0
+                ? $"{matchedProfile.Name} [Anti-Reset]"
+                : matchedProfile.Name;
             _hasActiveGameProfile = true;
             _isCurrentAppIgnored = false;
 
             if (!_isPaused)
             {
-                SendTriggerPair(matchedProfile.ToTriggerPair(), forceSend);
+                TriggerPairConfig pair = matchedProfile.ToTriggerPair();
+                SendTriggerPair(pair, forceSend);
+                ConfigureKeepAlive(matchedProfile.KeepAliveMs, pair);
+            }
+            else
+            {
+                StopKeepAlive();
             }
 
             return;
@@ -418,6 +487,7 @@ public sealed class TriggerDaemonService : IDisposable
         // Foreground window is not registered in profiles.json
         if (_profileManager.CurrentConfig.Settings.ResetOnAltTab || !_hasActiveGameProfile)
         {
+            StopKeepAlive();
             _activeProfileDisplay = DefaultProfileLabel;
             _hasActiveGameProfile = false;
             _isCurrentAppIgnored = false;
@@ -478,6 +548,42 @@ public sealed class TriggerDaemonService : IDisposable
         }
     }
 
+    private void ConfigureKeepAlive(int intervalMs, TriggerPairConfig pair)
+    {
+        if (intervalMs <= 0 || _disposed || _isPaused || !_hidManager.IsConnected)
+        {
+            StopKeepAlive();
+            return;
+        }
+
+        _activeKeepAlivePair = pair;
+        _keepAliveTimer.Interval = Math.Clamp(intervalMs, 100, 10000);
+        if (!_keepAliveTimer.Enabled)
+        {
+            _keepAliveTimer.Start();
+        }
+    }
+
+    private void StopKeepAlive()
+    {
+        _activeKeepAlivePair = null;
+        if (_keepAliveTimer.Enabled)
+        {
+            _keepAliveTimer.Stop();
+        }
+    }
+
+    private void OnKeepAliveTick(object? sender, EventArgs e)
+    {
+        if (_disposed || _isPaused || _activeKeepAlivePair is null || !_hidManager.IsConnected)
+        {
+            StopKeepAlive();
+            return;
+        }
+
+        SendTriggerPair(_activeKeepAlivePair, forceSend: true);
+    }
+
     private void RaiseStateChanged()
     {
         if (!_disposed)
@@ -496,6 +602,10 @@ public sealed class TriggerDaemonService : IDisposable
         ResetTriggersOnExit();
 
         _disposed = true;
+        StopKeepAlive();
+        _keepAliveTimer.Tick -= OnKeepAliveTick;
+        _keepAliveTimer.Dispose();
+
         _deviceWatcher.HidDevicesChanged -= OnHidDevicesChanged;
         _windowMonitor.ForegroundExecutableChanged -= OnForegroundExecutableChanged;
 

@@ -188,6 +188,19 @@ public sealed class TrayApplicationContext : ApplicationContext
             {
                 string capturedExe = entry.ExecutableName;
                 appMenuItem.DropDownItems.Add(new ToolStripSeparator());
+
+                if (!entry.ConfiguredProfile.Ignore)
+                {
+                    var keepAliveItem = new ToolStripMenuItem(
+                        "Manter ativo (anti-reset)",
+                        null,
+                        (_, _) => OnToggleKeepAliveClicked(capturedExe))
+                    {
+                        Checked = entry.ConfiguredProfile.KeepAliveMs > 0
+                    };
+                    appMenuItem.DropDownItems.Add(keepAliveItem);
+                }
+
                 var removeItem = new ToolStripMenuItem(
                     "Remover perfil (voltar ao padrão)",
                     null,
@@ -213,6 +226,26 @@ public sealed class TrayApplicationContext : ApplicationContext
             ShowBalloon(
                 "Erro ao salvar perfil",
                 errorMessage ?? "Não foi possível salvar no profiles.json.",
+                ToolTipIcon.Error);
+        }
+    }
+
+    private void OnToggleKeepAliveClicked(string executableName)
+    {
+        if (_daemon.ToggleKeepAlive(executableName, out bool enabled, out string? errorMessage))
+        {
+            ShowBalloon(
+                "Anti-reset atualizado",
+                enabled
+                    ? $"{executableName}: modo anti-reset ativado ({TriggerDaemonService.DefaultKeepAliveIntervalMs} ms)."
+                    : $"{executableName}: modo anti-reset desativado.",
+                ToolTipIcon.Info);
+        }
+        else
+        {
+            ShowBalloon(
+                "Erro ao atualizar anti-reset",
+                errorMessage ?? "Não foi possível atualizar o profiles.json.",
                 ToolTipIcon.Error);
         }
     }

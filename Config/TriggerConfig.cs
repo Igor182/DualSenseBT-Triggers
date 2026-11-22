@@ -65,6 +65,10 @@ public sealed class GameProfile
     [JsonPropertyName("ignore")]
     public bool Ignore { get; set; }
 
+    [JsonPropertyName("keep_alive_ms")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int KeepAliveMs { get; set; }
+
     [JsonPropertyName("l2")]
     public TriggerEffectConfig? L2 { get; set; }
 
