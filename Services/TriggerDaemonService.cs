@@ -31,7 +31,7 @@ public sealed class TriggerDaemonService : IDisposable
 {
     private const string DefaultProfileLabel = "Padrão / Livre";
     private const int MaxRecentExecutables = 12;
-    public const int DefaultKeepAliveIntervalMs = 500;
+    public const int DefaultKeepAliveIntervalMs = 50;
 
     private static readonly HashSet<string> IgnoredSystemExecutables = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -557,7 +557,7 @@ public sealed class TriggerDaemonService : IDisposable
         }
 
         _activeKeepAlivePair = pair;
-        _keepAliveTimer.Interval = Math.Clamp(intervalMs, 100, 10000);
+        _keepAliveTimer.Interval = Math.Clamp(intervalMs, 16, 10000);
         if (!_keepAliveTimer.Enabled)
         {
             _keepAliveTimer.Start();

@@ -85,6 +85,16 @@ public sealed class ProfileManager
                 R2 = new TriggerEffectConfig { Mode = "continuous", Params = [20, 210, 0] }
             }),
         new(
+            "magic",
+            "Magia / Aventura (L2 Mira Leve + R2 Varinha)",
+            exe => new GameProfile
+            {
+                Name = $"{Path.GetFileNameWithoutExtension(exe)} (Magia / Aventura)",
+                Ignore = false,
+                L2 = new TriggerEffectConfig { Mode = "continuous", Params = [30, 110, 0] },
+                R2 = new TriggerEffectConfig { Mode = "weapon", Params = [35, 100, 130] }
+            }),
+        new(
             "ignore",
             "Ignorar (Suporte Nativo Sem Fio)",
             exe => new GameProfile
